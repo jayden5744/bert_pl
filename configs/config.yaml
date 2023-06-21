@@ -1,0 +1,5 @@
+defaults:
+  - project: "bert_scratch"
+  - data: default
+  - model: bert
+  - trainer: default

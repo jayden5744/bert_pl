@@ -1,0 +1,15 @@
+project_name: "bert_scratch"
+folder_name: "sample"
+
+language: "en"
+
+train_path: "data/pretrain/train.txt"
+valid_path: "data/pretrain/valid.txt"
+test_path: "data/pretrain/test.txt"
+
+tokenizer_type: "bpe" # coice of [unigram, bpe, char, word]
+
+dictionary_path: "dictionary/${data.folder_name}"
+model_path: "SavedModel/${data.project_name}/${data.folder_name}"
+
+vocab_size: 30000

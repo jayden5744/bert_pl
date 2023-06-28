@@ -1,0 +1,14 @@
+max_seq_len: 512
+
+d_hidden: 384
+n_layers: 12
+n_heads: 12
+dropout_rate: 0.3
+
+mask_ratio: 0.15
+nsp_ratio: 0.5
+
+cls_token: "[CLS]"
+sep_token: "[SEP]"
+mask_token: "[MASK]"
+pad_token: "[PAD]"

@@ -47,6 +47,24 @@ def get_padding_mask(inputs: Tensor, padding_id: int) -> Tensor:
     ).contiguous()  # => [batch_size, len_q, len_k]
 
 
+class BERTEmbedding(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        vocab_size: int,
+        max_seq_len: int
+        ) -> None:
+        super().__init__()
+        self.tok_emb = nn.Embedding(vocab_size, d_model)
+        self.seg_emb = nn.Embedding(3, d_model)
+        pe_table = get_position_encoding_table(max_seq_len, d_model)
+        self.pos_emb = nn.Embedding.from_pretrained(pe_table, freeze=True)
+
+    def forward(self, input_tensor: Tensor, segment_tensor: Tensor) -> Tensor:
+        return self.tok_emb(input_tensor) + self.seg_emb(segment_tensor) + self.pos_emb(input_tensor)
+
+
+
 class ScaledDotProductAttention(nn.Module):
     def __init__(self, head_dim: int, dropout_rate: float = 0.0) -> None:
         super().__init__()
@@ -82,10 +100,10 @@ class MultiHeadAttention(nn.Module):
         self, d_hidden: int, n_heads: int,  dropout: float = 0
     ) -> None:
         super().__init__()
-        head_dim = d_hidden / n_heads
-        self.weight_q = nn.Linear(d_hidden, n_heads * head_dim)
-        self.weight_k = nn.Linear(d_hidden, n_heads * head_dim)
-        self.weight_v = nn.Linear(d_hidden, n_heads * head_dim)
+        head_dim = int(d_hidden / n_heads)
+        self.weight_q = nn.Linear(d_hidden, d_hidden)
+        self.weight_k = nn.Linear(d_hidden, d_hidden)
+        self.weight_v = nn.Linear(d_hidden, d_hidden)
 
         self.self_attention = ScaledDotProductAttention(
             head_dim=head_dim, dropout_rate=dropout
@@ -111,21 +129,17 @@ class MultiHeadAttention(nn.Module):
         batch_size = query.size(0)
 
         q_s = (
-            self.weight_q(query)
-            .view(batch_size, -1, self.n_heads, self.head_dim)
+            self.weight_q(query).view(batch_size, -1, self.n_heads, self.head_dim)
             .transpose(1, 2)
         )  # => [batch_size, n_heads, len_q, head_dim]
 
         k_s = (
-            self.weight_k(key)
-            .view(batch_size, -1, self.n_heads, self.head_dim)
+            self.weight_k(key).view(batch_size, -1, self.n_heads, self.head_dim)
             .transpose(1, 2)
         )  # => [batch_size, n_heads, len_q, head_dim]
 
         v_s = (
-            self.weight_v(value)
-            .view(batch_size, -1, self.n_heads, self.head_dim)
-            .transpose(1, 2)
+            self.weight_v(value).view(batch_size, -1, self.n_heads, self.head_dim).transpose(1, 2)
         )  # => [batch_size, n_heads, len_q, head_dim]
 
         attn_mask = attn_mask.unsqueeze(1).repeat(
@@ -187,6 +201,7 @@ class EncoderLayer(nn.Module):
         self.layer_norm_2 = nn.LayerNorm(d_hidden, eps=layer_norm_epsilon)
 
     def forward(self, enc_inputs: Tensor, enc_self_attn_mask: Tensor) -> Tensor:
+
         mh_output = self.mh_attention(
             enc_inputs, enc_inputs, enc_inputs, enc_self_attn_mask
         )
@@ -194,3 +209,49 @@ class EncoderLayer(nn.Module):
         ffnn_output = self.ffnn(mh_output)
         ffnn_output = self.layer_norm_2(ffnn_output + mh_output)
         return ffnn_output
+
+
+class BERT(nn.Module):
+    def __init__(
+        self,
+        d_input: int,
+        d_hidden: int,
+        n_heads: int,
+        ff_dim: int,
+        n_layers: int,
+        max_seq_len: int,
+        dropout_rate: float = 0.0,
+        padding_id: int = 3,
+        ) -> None:
+        super().__init__()
+        self.embedding = BERTEmbedding(
+            d_model=d_hidden,
+            vocab_size=d_input,
+            max_seq_len=max_seq_len
+        )
+        self.layers = nn.ModuleList(
+            [
+                EncoderLayer(
+                    d_hidden=d_hidden,
+                    n_heads=n_heads,
+                    ff_dim=ff_dim,
+                    dropout=dropout_rate,
+                )
+                for _ in range(n_layers)
+            ]
+        )
+        self.padding_id = padding_id
+
+    def forward(self, enc_inputs: Tensor, segment_tensor: Tensor) -> Tensor:
+        # enc_inputs : [bs, seq_len]
+        # segment_tensor : [bs, seq_len]
+        padding_mask = get_padding_mask(
+            enc_inputs, self.padding_id
+        )  # =>[batch_size, max_seq_size, max_seq_size]
+
+        conb_emb = self.embedding(enc_inputs, segment_tensor) # -> [bs, seq_len, d_hidden]
+        enc_outputs = conb_emb
+        for layer in self.layers:
+            enc_outputs = layer(enc_outputs, padding_mask) # -> [bs, seq_len, d_hidden]
+
+        return enc_outputs

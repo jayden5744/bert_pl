@@ -47,6 +47,33 @@ def get_padding_mask(inputs: Tensor, padding_id: int) -> Tensor:
     ).contiguous()  # => [batch_size, len_q, len_k]
 
 
+class BERTEmbedding(nn.Module):
+    def __init__(
+        self,
+        d_hidden: int,
+        vocab_size: int,
+        max_seq_len: int
+        ) -> None:
+        super().__init__()
+        self.tok_emb = nn.Embedding(vocab_size, d_hidden)
+        self.seg_emb = nn.Embedding(2, d_hidden) 
+        pe_table = get_position_encoding_table(max_seq_len, d_hidden)
+        self.pos_emb = nn.Embedding.from_pretrained(pe_table, freeze=True)
+
+    def forward(self, input_tensor: Tensor, segment_tensor: Tensor) -> Tensor:
+        """_summary_
+
+        Args:
+            input_tensor (Tensor): [bs, max_seq_size]
+            segment_tensor (Tensor): [bs, max_seq_size]
+
+        Returns:
+            Tensor: _description_
+        """
+        position = get_position(input_tensor)
+        return self.tok_emb(input_tensor) + self.seg_emb(segment_tensor) + self.pos_emb(position) # [bs, max_seq_size, d_hidden]
+
+
 class ScaledDotProductAttention(nn.Module):
     def __init__(self, head_dim: int, dropout_rate: float = 0.0) -> None:
         super().__init__()
@@ -82,15 +109,16 @@ class MultiHeadAttention(nn.Module):
         self, d_hidden: int, n_heads: int,  dropout: float = 0
     ) -> None:
         super().__init__()
-        head_dim = d_hidden / n_heads
-        self.weight_q = nn.Linear(d_hidden, n_heads * head_dim)
-        self.weight_k = nn.Linear(d_hidden, n_heads * head_dim)
-        self.weight_v = nn.Linear(d_hidden, n_heads * head_dim)
+        assert d_hidden // n_heads != 0
+        head_dim = int(d_hidden / n_heads)
+        self.weight_q = nn.Linear(d_hidden, d_hidden)
+        self.weight_k = nn.Linear(d_hidden, d_hidden)
+        self.weight_v = nn.Linear(d_hidden, d_hidden)
 
         self.self_attention = ScaledDotProductAttention(
             head_dim=head_dim, dropout_rate=dropout
         )
-        self.linear = nn.Linear(n_heads * head_dim, d_hidden)
+        self.linear = nn.Linear(d_hidden, d_hidden)
 
         self.dropout = nn.Dropout(dropout)
         self.n_heads = n_heads
@@ -194,3 +222,52 @@ class EncoderLayer(nn.Module):
         ffnn_output = self.ffnn(mh_output)
         ffnn_output = self.layer_norm_2(ffnn_output + mh_output)
         return ffnn_output
+
+
+class BERT(nn.Module):
+    def __init__(
+        self,
+        vocab_size: int,
+        d_hidden: int,
+        n_heads: int,
+        ff_dim: int, # d_hidden * 4로 사용
+        n_layers: int,
+        max_seq_len: int,
+        padding_id: int,
+        dropout_rate: float = 0.3,
+        ) -> None:
+        super().__init__()
+        self.embedding = BERTEmbedding(d_hidden=d_hidden, vocab_size=vocab_size, max_seq_len=max_seq_len)
+        self.layers = nn.ModuleList(
+            [
+                EncoderLayer(
+                 d_hidden=d_hidden,
+                 n_heads=n_heads,
+                 ff_dim=ff_dim,
+                 dropout=dropout_rate   
+                )
+                for _ in range(n_layers)
+            ]
+        )
+
+        self.padding_id = padding_id
+
+    def forward(self, enc_inputs: Tensor, segment_tensor: Tensor) -> Tensor:
+        """_summary_
+
+        Args:
+            enc_inputs (Tensor): [bs, seq_len]
+            segment_tensor (Tensor): [bs, seq_len]
+
+        Returns:
+            Tensor: _description_
+        """
+        padding_mask = get_padding_mask(
+            enc_inputs, self.padding_id
+        )  # =>[batch_size, max_seq_size, max_seq_size]
+
+        conb_emb = self.embedding(enc_inputs, segment_tensor)
+        enc_output = conb_emb
+        for layer in self.layers:
+            enc_output = layer(enc_output, padding_mask)
+        return enc_output
